@@ -1,8 +1,9 @@
 """One interface for every model backend.
 
 `structured` is a single call that must return JSON matching a pydantic model. `agentic` runs a tool loop
-confined to a Workspace and returns the agent's own summary; what it actually changed is read from git
-by the orchestrator, never taken from the summary.
+under a Guard (see hooks.py): every tool call is checked and traced, and the stop gate runs before the agent
+may finish. It returns the agent's own summary; what it actually changed is read from git by the
+orchestrator, never taken from the summary.
 """
 
 from __future__ import annotations
@@ -15,8 +16,8 @@ from typing import Protocol, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from software_factory.config import Role
+from software_factory.hooks import Guard
 from software_factory.models import Usage
-from software_factory.sandbox import Workspace
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -30,7 +31,7 @@ class Backend(Protocol):
 
     def structured(self, role: Role, user: str, schema: type[T], model: str) -> tuple[T, Usage]: ...
 
-    def agentic(self, role: Role, task: str, ws: Workspace, model: str, home: Path) -> tuple[str, Usage]: ...
+    def agentic(self, role: Role, task: str, guard: Guard, model: str, home: Path) -> tuple[str, Usage]: ...
 
 
 def schema_instruction(schema: type[BaseModel]) -> str:

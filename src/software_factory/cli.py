@@ -18,7 +18,7 @@ from software_factory.pipeline import Factory
 from software_factory.publisher import Bundle, Outbox, PublishError, flush_outbox, publish_bundle
 from software_factory.state import Store
 
-ROLES = ("triage", "planner", "coder", "qa", "reviewer", "retro")
+ROLES = ("triage", "spec", "planner", "coder", "qa", "reviewer", "retro")
 
 
 def _forge(root: Path) -> Forge:

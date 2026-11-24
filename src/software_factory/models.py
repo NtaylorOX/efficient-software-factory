@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 class Stage(StrEnum):
     RECEIVED = "received"
     TRIAGED = "triaged"
+    SPECIFIED = "specified"  # a delta spec passed the deterministic spec check
     NEEDS_INFO = "needs_info"  # triage found the ticket too vague; a re-trigger starts a fresh run
     DECLINED = "declined"  # a question or out of scope: answered with a comment, no code
     PLANNED = "planned"
@@ -66,11 +67,54 @@ class Route(BaseModel):
     reasons: list[str]
 
 
+class DeltaOp(StrEnum):
+    ADDED = "ADDED"
+    MODIFIED = "MODIFIED"
+    REMOVED = "REMOVED"
+
+
+class Scenario(BaseModel):
+    id: str = Field(description="S1, S2, ... unique within this change. Tests name it in a `# scenario: S1` comment.")
+    name: str
+    when: str
+    then: str
+
+
+class Requirement(BaseModel):
+    op: DeltaOp
+    capability: str = Field(description="Which living spec this belongs to: specs/<capability>/spec.md")
+    title: str = Field(description="For MODIFIED or REMOVED, the exact title of the existing requirement.")
+    text: str = Field(description="One or two sentences using SHALL. For REMOVED: why it is removed.")
+    scenarios: list[Scenario] = Field(default_factory=list)
+
+
+class OpenQuestion(BaseModel):
+    question: str
+    assumption: str = Field(default="", description="If set, work goes ahead on this assumption and it is recorded.")
+
+
+class Spec(BaseModel):
+    """A delta against the living specs, in the OpenSpec style: what changes, as requirements and scenarios."""
+
+    why: str = Field(description="The problem, in two or three sentences.")
+    requirements: list[Requirement]
+    out_of_scope: list[str] = Field(default_factory=list)
+    open_questions: list[OpenQuestion] = Field(default_factory=list)
+
+    def scenarios(self) -> list[Scenario]:
+        return [s for r in self.requirements for s in r.scenarios]
+
+
+class ScenarioCheck(BaseModel):
+    scenario: str = Field(description="A scenario id from the spec.")
+    by: Literal["test", "qa"] = Field(description="test: a pytest names it; qa: the browser QA agent confirms it.")
+
+
 class Plan(BaseModel):
     summary: str
     files_to_change: list[str] = Field(description="Repo-relative paths the coder may edit.")
-    steps: list[str]
-    acceptance_criteria: list[str] = Field(description="Checks a QA agent can confirm in the UI or tests.")
+    tasks: list[str] = Field(description="Small, ordered implementation tasks.")
+    checks: list[ScenarioCheck] = Field(description="How each scenario in the spec will be shown to hold.")
     risk_notes: str = ""
 
 

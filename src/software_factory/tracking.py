@@ -16,7 +16,7 @@ ICONS = {
     "published": "✅", "ready": "📦", "failed": "❌", "rejected": "⛔", "declined": "💬", "needs_info": "❓",
     "awaiting_approval": "✋",
 }  # fmt: skip
-SKIP_KEYS = {"t", "run", "kind", "stage", "usage", "role", "tier", "model"}
+SKIP_KEYS = {"t", "run", "kind", "stage", "usage", "role", "tier", "model", "passed", "blocked", "allowed", "tool"}
 
 
 def _detail(ev: dict[str, Any]) -> str:
@@ -29,9 +29,16 @@ def _detail(ev: dict[str, Any]) -> str:
     return "; ".join(parts).replace("|", "/").replace("\n", " ")[:160]
 
 
+CHECKS = {"spec_check": "📐 spec check", "plan_check": "🗺️ plan check"}
+ICONS_EXTRA = {"archive": "🗄️ archive", "learn": "🎓 learn"}
+
+
 def rows(r: Run) -> list[dict[str, str]]:
+    """One row per event. Allowed tool calls are counted on the agent's row instead of listed one by one."""
     out, prev = [], None
     for ev in r.trace():
+        if ev["kind"] == "tool" and ev.get("allowed", True):
+            continue
         took = f"{ev['t'] - prev:.1f}s" if prev is not None else ""
         prev = ev["t"]
         if ev["kind"] == "stage":
@@ -40,8 +47,16 @@ def rows(r: Run) -> list[dict[str, str]]:
             step = f"🤖 {ev['role']}"
         elif ev["kind"] == "verify":
             step = "🧪 verify " + ("passed" if ev["passed"] else "failed")
+        elif ev["kind"] in CHECKS:
+            step = CHECKS[ev["kind"]] + (" passed" if ev["passed"] else " failed")
+        elif ev["kind"] == "tool":
+            step = f"🛡️ denied {ev.get('tool')}"
+        elif ev["kind"] == "stop_gate":
+            step = "🛑 stop gate: " + (
+                "sent back" if ev["blocked"] else "passed" if not ev["problems"] else "let through"
+            )
         else:
-            step = ev["kind"]
+            step = ICONS_EXTRA.get(ev["kind"], ev["kind"])
         usage = ev.get("usage") or {}
         tokens = f"{usage.get('input_tokens', 0)}/{usage.get('output_tokens', 0)}" if usage else ""
         model = f"{ev['tier']}: {ev['model']}" if "model" in ev else ""

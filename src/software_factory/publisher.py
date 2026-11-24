@@ -37,6 +37,7 @@ class Bundle(BaseModel):
     body: str
     draft: bool
     allowed_files: list[str]
+    spec_files: list[str] = []
     diff: str
 
 
@@ -46,7 +47,8 @@ class PublishError(Exception):
 
 def check_bundle(cfg: FactoryConfig, bundle: Bundle, files: list[str], diff: str) -> list[str]:
     if bundle.kind == "change":
-        return check_change(cfg, bundle.allowed_files, Change(agent_summary="", files_changed=files, diff=diff))
+        change = Change(agent_summary="", files_changed=files, diff=diff)
+        return check_change(cfg, bundle.allowed_files, change, bundle.spec_files)
     # Lessons live under agents/, which agents can never write. Only lesson files may change, and every added
     # line is re-validated here, so a tampered bundle cannot smuggle in other edits.
     problems = [f"not a lesson file: {f}" for f in files if not fnmatch.fnmatch(f, LESSON_FILES)]

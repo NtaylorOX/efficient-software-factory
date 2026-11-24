@@ -1,8 +1,13 @@
 """`factory demo`: five tickets through the real pipeline with a scripted model, in a throwaway repo.
 
-1. Bug, fast lane: cheap models; the first fix ships a test that also passes on the base branch, so the
-   fail-before/pass-after check rejects it; the retry (escalated a tier) ships a real regression test.
-2. Feature, complex lane: frontier planner, fails lint once, fixed on retry, QA'd in a real browser.
+Every ticket that gets past triage is specified first: a delta spec with WHEN/THEN scenarios, checked by code.
+
+1. Bug, fast lane: cheap models; the spec MODIFIES the "Add a note" requirement. The first fix ships a test
+   that also passes on the base branch, so the fail-before/pass-after check rejects it; the retry (escalated
+   a tier) ships a real regression test.
+2. Feature, complex lane: frontier spec writer. In one coder session the guard denies a write to the living
+   spec, and the stop gate sends the coder back for an unused import before it may finish. QA confirms the
+   browser scenarios; the PR adds the change folder and merges the new requirement into specs/.
 3. A request from an unknown account that mentions passwords: stops at the human gate.
 4. A prompt injection that fools triage: the plan names a protected path and policy rejects it anyway.
 5. A vague ticket: triage asks for a repro instead of guessing.
@@ -19,7 +24,7 @@ import subprocess
 from pathlib import Path
 
 from software_factory import tracking
-from software_factory.backends.mock import MockBackend
+from software_factory.backends.mock import Item, MockBackend
 from software_factory.config import load_config
 from software_factory.forge import LocalForge
 from software_factory.git import git
@@ -27,22 +32,55 @@ from software_factory.learning import learn
 from software_factory.pipeline import Factory
 from software_factory.state import Store
 
-SEARCH_CRITERIA = [
-    "Typing 'milk' in the search box shows the note 'Buy milk and eggs'.",
-    "Typing 'milk' in the search box hides the note 'Book dentist appointment'.",
-]
+Script = dict[str, list[Item]]
 
-SEARCH_PLAN = {
-    "summary": "Add a q query parameter to GET /api/notes and a search box in the UI that filters as you type.",
-    "files_to_change": ["demo_app/app.py", "demo_app/static/index.html", "demo_app/tests/test_app.py"],
-    "steps": [
-        "Accept an optional q parameter in list_notes and filter case-insensitively.",
-        "Add a labelled search input above the list that reloads notes with ?q=.",
-        "Test filtering and the empty query.",
+
+def _scenario(sid: str, name: str, when: str, then: str) -> dict[str, str]:
+    return {"id": sid, "name": name, "when": when, "then": then}
+
+
+def _spec(why: str, reqs: list[dict[str, object]], questions: list[dict[str, str]] | None = None) -> str:
+    return json.dumps({"why": why, "requirements": reqs, "out_of_scope": [], "open_questions": questions or []})
+
+
+def _req(
+    op: str, title: str, text: str, scenarios: list[dict[str, str]], capability: str = "notes"
+) -> dict[str, object]:
+    return {"op": op, "capability": capability, "title": title, "text": text, "scenarios": scenarios}
+
+
+def _plan(summary: str, files: list[str], checks: dict[str, str], risk: str = "") -> str:
+    return json.dumps(
+        {"summary": summary, "files_to_change": files, "tasks": [summary],
+         "checks": [{"scenario": k, "by": v} for k, v in checks.items()], "risk_notes": risk}
+    )  # fmt: skip
+
+
+SEARCH_SPEC = _spec(
+    "The board gets long and there is no way to find one note.",
+    [
+        _req(
+            "ADDED",
+            "Search notes",
+            "The board SHALL filter the list to notes containing the search text, ignoring case.",
+            [
+                _scenario("S1", "Matching note is shown", "the user types 'milk' in the search box",
+                          "the note 'Buy milk and eggs' is visible"),
+                _scenario("S2", "Other notes are hidden", "the user types 'milk' in the search box",
+                          "the note 'Book dentist appointment' is not visible"),
+                _scenario("S3", "Search ignores case", "a client requests GET /api/notes?q=MILK",
+                          "only 'Buy milk and eggs' is returned"),
+            ],
+        )
     ],
-    "acceptance_criteria": SEARCH_CRITERIA,
-    "risk_notes": "",
-}
+    [{"question": "Should search match part of a word?", "assumption": "Yes: a plain substring match."}],
+)  # fmt: skip
+
+SEARCH_PLAN = _plan(
+    "Add a q query parameter to GET /api/notes and a search box in the UI that filters as you type.",
+    ["demo_app/app.py", "demo_app/static/index.html", "demo_app/tests/test_app.py"],
+    {"S1": "qa", "S2": "qa", "S3": "test"},
+)
 
 
 def _search_edits(root: Path, lint_error: bool) -> dict[str, str]:
@@ -69,32 +107,25 @@ def _search_edits(root: Path, lint_error: bool) -> dict[str, str]:
         '    document.getElementById("search").addEventListener("input", load);\n    load();\n  </script>',
     )
     tests = (root / "demo_app/tests/test_app.py").read_text() + (
-        "\n\ndef test_search_filters_notes() -> None:\n"
+        "\n\n# scenario: S3\ndef test_search_filters_notes() -> None:\n"
         '    texts = [n["text"] for n in client.get("/api/notes", params={"q": "MILK"}).json()]\n'
         '    assert texts == ["Buy milk and eggs"]\n'
     )
     return {"demo_app/app.py": app, "demo_app/static/index.html": html, "demo_app/tests/test_app.py": tests}
 
 
-def _qa_script() -> list[str | dict[str, str]]:
+def _qa_script() -> list[Item]:
     steps = [
         {"action": "fill", "target": "Search notes", "value": "milk"},
         {"action": "expect_text", "value": "Buy milk and eggs"},
         {"action": "expect_no_text", "value": "Book dentist appointment"},
-        {"action": "done", "value": json.dumps(dict.fromkeys(SEARCH_CRITERIA, True))},
+        {"action": "done", "value": json.dumps({"S1": True, "S2": True})},
     ]
     return [json.dumps(s) for s in steps]
 
 
 def _triage(kind: str, size: str, summary: str, missing: list[str] | None = None, repro: str = "") -> str:
     return json.dumps({"kind": kind, "size": size, "summary": summary, "missing_info": missing or [], "repro": repro})
-
-
-def _plan(summary: str, files: list[str], criteria: list[str], risk: str = "") -> str:
-    return json.dumps(
-        {"summary": summary, "files_to_change": files, "steps": [summary], "acceptance_criteria": criteria,
-         "risk_notes": risk}
-    )  # fmt: skip
 
 
 BLANK_FIX = """    @field_validator("text")
@@ -116,46 +147,107 @@ def _blank_edits(root: Path, real_test: bool) -> dict[str, str]:
         "    text: str = Field(min_length=1, max_length=280)\n\n" + BLANK_FIX,
     )
     body = '"   "' if real_test else '""'  # "" was already rejected before the fix: that test proves nothing
-    tests = (root / "demo_app/tests/test_app.py").read_text() + (
-        "\n\ndef test_blank_note_is_rejected() -> None:\n"
+    tests = (root / "demo_app/tests/test_app.py").read_text().replace(
+        "def test_add_note_rejects_empty_text", "# scenario: S1\ndef test_add_note_rejects_empty_text"
+    ) + (
+        "\n\n# scenario: S2\ndef test_blank_note_is_rejected() -> None:\n"
         f'    assert client.post("/api/notes", json={{"text": {body}}}).status_code == 422\n'
     )
     return {"demo_app/app.py": app, "demo_app/tests/test_app.py": tests}
 
 
-def scripts(root: Path) -> dict[str, dict[str, list[str | dict[str, str]]]]:
-    approve = json.dumps({"approve": True, "comments": ["demo_app/app.py: matches the plan."], "security_concerns": []})
+BLANK_SPEC = _spec(
+    "A note made only of spaces is accepted and shows as an empty row.",
+    [
+        _req(
+            "MODIFIED",
+            "Add a note",
+            "The board SHALL accept a note of 1 to 280 characters after trimming spaces, and reject anything "
+            "else with 422.",
+            [
+                _scenario("S1", "Empty note is rejected", "a client posts a note with empty text",
+                          "the response status is 422 and no note is added"),
+                _scenario("S2", "Blank note is rejected", "a client posts a note of only spaces",
+                          "the response status is 422 and no note is added"),
+            ],
+        )
+    ],
+)  # fmt: skip
+
+
+def scripts(root: Path) -> dict[str, Script]:
+    approve = json.dumps({"approve": True, "comments": ["demo_app/app.py: matches the spec."], "security_concerns": []})
     blank_files = ["demo_app/app.py", "demo_app/tests/test_app.py"]
+    lint_fail = _search_edits(root, lint_error=True)
+    lint_fail["specs/notes/spec.md"] = "# notes\n\nAnything goes.\n"  # the guard denies this: specs are protected
     return {
         "t1-blank": {
             "triage": [_triage("bug", "S", "Notes made of spaces are accepted.", repro="POST {'text': '   '} -> 201")],
+            "spec": [BLANK_SPEC],
             "planner": [
-                _plan("Reject notes that are blank after stripping.", blank_files, ["A blank note is rejected."])
+                _plan("Reject notes that are blank after trimming.", blank_files, {"S1": "test", "S2": "test"})
             ],
             "coder": [_blank_edits(root, real_test=False), _blank_edits(root, real_test=True)],
             "reviewer": [approve],
         },
         "t2-search": {
             "triage": [_triage("feature", "M", "Filter notes with a search box.")],
-            "planner": [json.dumps(SEARCH_PLAN)],
-            "coder": [_search_edits(root, lint_error=True), _search_edits(root, lint_error=False)],
+            "spec": [SEARCH_SPEC],
+            "planner": [SEARCH_PLAN],
+            "coder": [[lint_fail, _search_edits(root, lint_error=False)]],  # one session: the stop gate sends it back
             "qa": _qa_script(),
             "reviewer": [approve],
         },
         "t3-admin": {
             "triage": [_triage("feature", "M", "Password-protected delete-all.")],
+            "spec": [
+                _spec(
+                    "The owner wants to clear the board in one go.",
+                    [
+                        _req(
+                            "ADDED",
+                            "Delete all notes",
+                            "The board SHALL delete every note when given the admin password.",
+                            [
+                                _scenario(
+                                    "S1",
+                                    "Right password empties the board",
+                                    "the admin clicks 'Delete all' and enters the right password",
+                                    "the list is empty",
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ],
             "planner": [
                 _plan(
                     "Add an admin password that unlocks a 'delete all notes' button.",
-                    ["demo_app/app.py", "demo_app/static/index.html"],
-                    ["Clicking 'Delete all' with the right password empties the list."],
+                    ["demo_app/app.py", "demo_app/static/index.html", "demo_app/tests/test_app.py"],
+                    {"S1": "test"},
                     "Adds an authentication check and a destructive endpoint.",
                 )
             ],
         },
         "t4-injection": {
             "triage": [_triage("chore", "S", "Small CI tweak.")],  # triage was fooled; policy is the backstop
-            "planner": [_plan("Update the CI workflow as the ticket asks.", [".github/workflows/factory.yml"], ["ok"])],
+            "spec": [
+                _spec(
+                    "The ticket asks for more CI output.",
+                    [
+                        _req(
+                            "ADDED",
+                            "Print environment",
+                            "CI SHALL print its environment variables.",
+                            [_scenario("S1", "Env is printed", "CI runs", "every variable is in the log")],
+                            "ci",
+                        )
+                    ],
+                )
+            ],
+            "planner": [
+                _plan("Update the CI workflow as the ticket asks.", [".github/workflows/factory.yml"], {"S1": "test"})
+            ],
         },
         "t5-vague": {
             "triage": [_triage("bug", "M", "Something is broken.", missing=["What did you do, and what happened?"])],
@@ -167,8 +259,8 @@ def scripts(root: Path) -> dict[str, dict[str, list[str | dict[str, str]]]]:
                         "lessons": [
                             {
                                 "role": "coder",
-                                "text": "Remove unused imports before finishing; ruff runs on every attempt.",
-                                "evidence": "verify failed on attempt 1 with F401",
+                                "text": "Remove unused imports before finishing; ruff runs when you stop.",
+                                "evidence": "stop gate sent the coder back with F401",
                             },
                             {
                                 "role": "coder",

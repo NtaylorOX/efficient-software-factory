@@ -135,7 +135,7 @@ def run_qa(
         for _ in range(role.max_turns):
             snapshot = page.locator("body").aria_snapshot()[:SNAPSHOT_CHARS]
             prompt = (
-                "Acceptance criteria:\n" + "\n".join(f"- {c}" for c in criteria)
+                "Scenarios to check:\n" + "\n".join(f"- {c}" for c in criteria)
                 + "\n\nSteps so far:\n" + ("\n".join(history[-8:]) or "(none)")
                 + f"\n\nCurrent page ({page.url.removeprefix(server.url) or '/'}):\n{snapshot}"
             )  # fmt: skip
@@ -160,11 +160,13 @@ def run_qa(
 
 
 def _parse_verdict(raw: str, criteria: list[str]) -> dict[str, bool]:
-    """Criteria the agent did not mention count as failed, so a short verdict cannot pass by omission."""
+    """Criteria the agent did not mention count as failed, so a short verdict cannot pass by omission.
+
+    A criterion such as "S1: WHEN ... THEN ..." may be given verbatim or by its id ("S1")."""
     try:
         given = json.loads(raw)
     except json.JSONDecodeError:
         given = {}
     if not isinstance(given, dict):
         given = {}
-    return {c: given.get(c) is True for c in criteria}
+    return {c: given.get(c, given.get(c.split(":", 1)[0])) is True for c in criteria}

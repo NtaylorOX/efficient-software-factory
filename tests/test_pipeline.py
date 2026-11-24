@@ -33,9 +33,16 @@ def test_demo_without_browser(tmp_path: Path) -> None:
     }
     store = Store(out / ".factory")
     search = store.get(store.runs("t2-search")[0][0])
-    verifies = [e for e in search.trace() if e["kind"] == "verify"]
-    assert [v["passed"] for v in verifies] == [False, True]  # lint failure fed back, fixed on attempt 2
-    assert "factory/t2-search-" in git(out, "branch", "--list", "factory/*")
+    trace = search.trace()
+    assert [v["passed"] for v in trace if v["kind"] == "verify"] == [True]  # the stop gate caught lint in-session
+    assert [g["blocked"] for g in trace if g["kind"] == "stop_gate"] == [True, False]
+    denied = [e for e in trace if e["kind"] == "tool" and not e["allowed"]]
+    assert [e["target"] for e in denied] == ["specs/notes/spec.md"]  # agents cannot edit the living spec
+    branch = git(out, "branch", "--list", "factory/t2-search-*").strip()
+    assert branch
+    pr_files = git(out, "diff", "--name-only", "main", branch).split()
+    assert "specs/notes/spec.md" in pr_files and any(f.endswith("-t2-search/spec.md") for f in pr_files)
+    assert "### Requirement: Search notes" in git(out, "show", f"{branch}:specs/notes/spec.md")
     assert not search.workspace.exists()  # worktree removed after publish
     lessons = load_lessons(out / "agents" / "lessons" / "coder.md")
     assert len(lessons) == 2 and not (out / "agents" / "lessons" / "reviewer.md").exists()
@@ -66,7 +73,7 @@ def test_approval_resumes_the_same_run(tmp_path: Path) -> None:
     _, title, body, author = TICKETS[2]
     ticket = forge.add_ticket("t3-admin", title, body, author)
     script = scripts(repo)["t3-admin"]
-    script["coder"] = [{"demo_app/app.py": "import os\n"}] * 3  # fails lint every time
+    script["coder"] = [{"demo_app/app.py": "import os\n"}] * 3  # fails lint and has no tagged test, every time
     factory = Factory(repo, cfg, store, forge, MockBackend(script), qa=False)
     first = factory.handle(ticket)
     assert first.stage == Stage.AWAITING_APPROVAL
@@ -84,10 +91,12 @@ def test_coder_cannot_touch_files_outside_plan(tmp_path: Path) -> None:
     forge = LocalForge(state, cfg)
     ticket = forge.add_ticket("t2", *TICKETS[1][1:])
     script = scripts(repo)["t2-search"]
-    script["coder"] = [{"factory.yaml": "backend: evil\n"}]
+    script["coder"] = [{"factory.yaml": "backend: evil\n", "demo_app/README.md": "x\n"}]
     r = Factory(repo, cfg, Store(state), forge, MockBackend(script), qa=False).handle(ticket)
     assert r.stage == Stage.FAILED
-    assert any(e["kind"] == "error" and "protected" in e["error"] for e in r.trace())
+    denied = {e["target"]: e["reason"] for e in r.trace() if e["kind"] == "tool" and not e["allowed"]}
+    assert "protected" in denied["factory.yaml"] and "outside the plan" in denied["demo_app/README.md"]
+    assert "backend: evil" not in (repo / "factory.yaml").read_text()
 
 
 @pytest.mark.browser
@@ -98,6 +107,7 @@ def test_demo_with_browser_qa(tmp_path: Path) -> None:
     run = store.get(store.runs("t2-search")[0][0])
     qa = json.loads((run.dir / "qa.json").read_text())
     assert qa["passed"] and all(qa["criteria"].values()) and (run.dir / "qa.png").is_file()
+    assert [k.split(":")[0] for k in qa["criteria"]] == ["S1", "S2"]  # only the scenarios the plan gave to QA
 
 
 def test_deferred_publish_and_tampered_bundle(tmp_path: Path) -> None:
@@ -139,3 +149,34 @@ def test_demo_with_relative_output_path(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.chdir(tmp_path)
     out = run_demo(ROOT, Path("rel-demo"), qa=False)
     assert stages(out)["t2-search"] == "published"
+
+
+def test_spec_question_without_assumption_asks_the_author(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    make_sandbox_repo(ROOT, repo)
+    cfg, state = load_config(repo), repo / ".factory"
+    forge = LocalForge(state, cfg)
+    ticket = forge.add_ticket("t2", *TICKETS[1][1:])
+    script = scripts(repo)["t2-search"]
+    spec = json.loads(script["spec"][0])  # type: ignore[arg-type]
+    spec["open_questions"] = [{"question": "Search titles only, or note text too?", "assumption": ""}]
+    script["spec"] = [json.dumps(spec)]
+    r = Factory(repo, cfg, Store(state), forge, MockBackend(script), qa=False).handle(ticket)
+    assert r.stage == Stage.NEEDS_INFO and not r.has("plan")
+    assert "Search titles only" in (state / "tickets" / "t2.comments.md").read_text()
+
+
+def test_bad_spec_goes_back_once_with_the_problems(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    make_sandbox_repo(ROOT, repo)
+    cfg, state = load_config(repo), repo / ".factory"
+    forge = LocalForge(state, cfg)
+    ticket = forge.add_ticket("t2", *TICKETS[1][1:])
+    script = scripts(repo)["t2-search"]
+    bad = json.loads(script["spec"][0])  # type: ignore[arg-type]
+    bad["requirements"][0]["op"] = "MODIFIED"  # "Search notes" is not in the living spec yet
+    backend = MockBackend({**script, "spec": [json.dumps(bad), script["spec"][0]]})
+    r = Factory(repo, cfg, Store(state), forge, backend, qa=False).handle(ticket)
+    assert r.stage == Stage.PUBLISHED
+    second_prompt = [u for role, u in backend.calls if role == "spec"][1]
+    assert "no such requirement in specs/notes/spec.md" in second_prompt

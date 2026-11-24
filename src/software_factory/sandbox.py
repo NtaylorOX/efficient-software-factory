@@ -17,6 +17,8 @@ from pathlib import Path
 # Variables a child process may inherit. Everything else, including every *_KEY and *_TOKEN, is dropped.
 SAFE_ENV_VARS = ("PATH", "LANG", "LC_ALL", "TERM", "TZ", "UV_CACHE_DIR", "UV_PYTHON", "UV_NATIVE_TLS")
 SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH")
+# Files no agent may read, even inside its workspace.
+UNREADABLE = (".env*", "*/.env*", ".git", ".git/*", "*.pem", "*.key", ".factory/*")
 
 
 class SandboxError(Exception):
@@ -73,8 +75,15 @@ class Workspace:
             raise SandboxError(f"path is outside the plan's files: {norm}")
         return path
 
-    def read(self, rel: str, max_chars: int = 20_000) -> str:
+    def check_readable(self, rel: str) -> Path:
         path = self.resolve(rel)
+        norm = self.rel(path) if path != self.root else "."
+        if any(fnmatch.fnmatch(norm, pat) for pat in UNREADABLE):
+            raise SandboxError(f"path may not be read by an agent: {norm}")
+        return path
+
+    def read(self, rel: str, max_chars: int = 20_000) -> str:
+        path = self.check_readable(rel)
         if not path.is_file():
             raise SandboxError(f"not a file: {rel}")
         text = path.read_text(errors="replace")

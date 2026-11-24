@@ -15,8 +15,8 @@ def plan(*files: str, risk: str = "") -> Plan:
     return Plan(
         summary="Add search",
         files_to_change=list(files),
-        steps=["do it"],
-        acceptance_criteria=["works"],
+        tasks=["do it"],
+        checks=[],
         risk_notes=risk,
     )
 

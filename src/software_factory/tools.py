@@ -1,4 +1,5 @@
-"""File tools for the LiteLLM tool loop. Every call goes through Workspace, so the path rules apply.
+"""File tools for the LiteLLM tool loop. Every call is checked by the Guard first, then runs through
+Workspace, so the same rules apply as for Claude Code's hooks.
 
 There is deliberately no shell tool: the coder edits files, and the orchestrator runs the tests itself.
 """
@@ -9,6 +10,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from software_factory.hooks import Guard
 from software_factory.sandbox import SandboxError, Workspace
 
 ToolFn = Callable[[Workspace, dict[str, Any]], str]
@@ -70,12 +72,20 @@ def openai_tool_specs(names: list[str]) -> list[dict[str, Any]]:
     return specs
 
 
-def call_tool(ws: Workspace, allowed: list[str], name: str, raw_args: str) -> str:
+def call_tool(guard: Guard, name: str, raw_args: str) -> str:
     """Run one tool call. Errors go back to the model as text so it can recover; nothing is swallowed."""
-    if name not in allowed or name not in TOOLS:
-        return f"error: tool {name!r} is not available to this agent"
     try:
         args = json.loads(raw_args or "{}")
-        return TOOLS[name][0](ws, args)
-    except (SandboxError, KeyError, json.JSONDecodeError, OSError) as exc:
-        return f"error: {exc}"
+    except json.JSONDecodeError as exc:
+        return f"error: arguments are not JSON: {exc}"
+    path = args.get("path") if isinstance(args, dict) else None
+    if (reason := guard.check(name, str(path) if path else None)) or name not in TOOLS:
+        reason = reason or f"unknown tool {name!r}"
+        guard.record("tool", tool=name, target=path, allowed=False, reason=reason)
+        return f"error: denied: {reason}"
+    try:
+        out = TOOLS[name][0](guard.ws, args)
+    except (SandboxError, KeyError, OSError) as exc:
+        out = f"error: {exc}"
+    guard.record("tool", tool=name, target=path, allowed=not out.startswith("error"))
+    return out

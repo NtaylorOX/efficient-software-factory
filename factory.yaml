@@ -17,6 +17,11 @@ protected_paths:                   # never written by an agent, even with approv
   - "uv.lock"
   - "Makefile"
   - ".env*"
+  - "CLAUDE.md"                    # Claude Code reads these as context, so an agent must never write them
+  - "AGENTS.md"
+  - ".claude/*"
+  - "specs/*"                      # specs are written by the factory's own code from the typed spec, not by agents
+  - "changes/*"
 gate_paths: ["demo_app/auth*", "demo_app/requirements*"]   # writable, but a human approves the plan first
 gate_keywords: [password, secret, token, credential, auth, delete all, payment, dependency]
 
@@ -24,6 +29,8 @@ verify_commands:                   # the orchestrator runs these itself; the cod
   - ["{python}", -m, pytest, demo_app/tests, -q, -p, no:cacheprovider]   # {python} = the factory's interpreter
   - ["{python}", -m, ruff, check, --no-cache, demo_app]
 test_globs: ["demo_app/tests/*"]
+stop_gate_commands:                # the coder may not finish until these pass (Claude Code Stop hook, same in LiteLLM)
+  - ["{python}", -m, ruff, check, --no-cache, demo_app]
 max_diff_lines: 400
 
 backend: mock                      # mock | litellm | claude-code
@@ -48,13 +55,13 @@ lanes:
     require_regression_test: true  # the new test must fail on the base branch and pass with the fix
     max_code_attempts: 2
     escalate_on_retry: true
-    roles: {planner: fast, coder: standard, reviewer: fast}
+    roles: {spec: fast, planner: fast, coder: standard, reviewer: fast}
   complex:
-    description: Features and anything large. Frontier planning, browser QA against acceptance criteria.
+    description: Features and anything large. Frontier spec writing, browser QA against the spec's scenarios.
     qa: true
     max_code_attempts: 3
     escalate_on_retry: true        # attempt 2 runs the coder on frontier
-    roles: {planner: frontier, coder: standard, qa: fast, reviewer: standard}
+    roles: {spec: frontier, planner: standard, coder: standard, qa: fast, reviewer: standard}
 
 safe_outputs:                      # caps the publisher enforces, whatever the agent side queued
   max_comments_per_ticket: 4
