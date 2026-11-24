@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from software_factory.backends.base import BackendError, parse_json
-from software_factory.backends.claude_code import build_command, claude_tools, credential_env
+from software_factory.backends.claude_code import build_command, claude_tools, credential_env, isolation_flag
 from software_factory.backends.litellm import LiteLLMBackend
 from software_factory.config import load_role
 from software_factory.models import Plan, Review
@@ -92,6 +92,18 @@ def test_claude_code_command_is_locked_down() -> None:
     assert "Bash" not in " ".join(cmd) and "WebFetch" not in " ".join(cmd)
     planner = build_command(load_role(ROOT, "planner"), "m", Plan.model_json_schema(), [])
     assert planner[planner.index("--tools") + 1] == "" and "--json-schema" in planner
+
+
+def test_subscription_token_wins_and_switches_to_safe_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("FACTORY_ANTHROPIC_API_KEY", "sk-virtual-key")
+    monkeypatch.setenv("FACTORY_CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-subscription")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_x")
+    creds = credential_env()
+    assert creds == {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-subscription"}  # never both
+    assert isolation_flag(creds) == "--safe-mode"  # --bare would ignore OAuth
+    assert isolation_flag({"ANTHROPIC_API_KEY": "k"}) == "--bare"
+    env = scrubbed_env(tmp_path, creds)
+    assert leaked_secret_names(env, allowed=["CLAUDE_CODE_OAUTH_TOKEN"]) == []
 
 
 def test_claude_code_gets_only_the_renamed_credential(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

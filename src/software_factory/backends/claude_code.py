@@ -1,7 +1,13 @@
 """Headless Claude Code (`claude -p`) as a backend.
 
+Two ways to authenticate, chosen by which secret is set:
+- Subscription (preferred): FACTORY_CLAUDE_CODE_OAUTH_TOKEN, a long-lived token from `claude setup-token`, passed
+  to the child as CLAUDE_CODE_OAUTH_TOKEN. Usage counts against your Claude plan, not API billing.
+- API key: FACTORY_ANTHROPIC_API_KEY (ideally a LiteLLM virtual key, with FACTORY_ANTHROPIC_BASE_URL at the proxy).
+
 Hardening, all from flags so it is visible here:
-- `--bare`: no CLAUDE.md discovery, hooks, plugins, memory or keychain; auth is ANTHROPIC_API_KEY only.
+- `--safe-mode` (subscription) or `--bare` (API key): no CLAUDE.md, skills, hooks, plugins, MCP servers or custom
+  agents. `--bare` reads only ANTHROPIC_API_KEY, so subscription auth uses `--safe-mode`, which keeps normal auth.
 - `--restricted`: no Bash or WebFetch, settings files ignored, file tools confined to the working directory.
 - `--tools` lists the exact built-in tools for the role; `--strict-mcp-config` with no config means no MCP.
 - `--no-session-persistence`: nothing from one ticket is resumable by the next.
@@ -35,7 +41,12 @@ def claude_tools(role_tools: list[str]) -> list[str]:
 
 
 def credential_env() -> dict[str, str]:
-    """The only credential handed to the child, renamed from FACTORY_* so it is never inherited by accident."""
+    """The only credential handed to the child, renamed from FACTORY_* so it is never inherited by accident.
+
+    A subscription token wins over an API key, and the child never gets both.
+    """
+    if token := os.environ.get("FACTORY_CLAUDE_CODE_OAUTH_TOKEN"):
+        return {"CLAUDE_CODE_OAUTH_TOKEN": token}
     env = {}
     if key := os.environ.get("FACTORY_ANTHROPIC_API_KEY"):
         env["ANTHROPIC_API_KEY"] = key
@@ -44,9 +55,15 @@ def credential_env() -> dict[str, str]:
     return env
 
 
-def build_command(role: Role, model: str, schema: dict[str, Any] | None, tools: list[str]) -> list[str]:
+def isolation_flag(env: dict[str, str]) -> str:
+    return "--safe-mode" if "CLAUDE_CODE_OAUTH_TOKEN" in env else "--bare"
+
+
+def build_command(
+    role: Role, model: str, schema: dict[str, Any] | None, tools: list[str], isolation: str = "--bare"
+) -> list[str]:
     cmd = [
-        "claude", "-p", "--bare", "--restricted", "--strict-mcp-config", "--no-session-persistence",
+        "claude", "-p", isolation, "--restricted", "--strict-mcp-config", "--no-session-persistence",
         "--output-format", "json", "--model", model, "--max-turns", str(role.max_turns),
         "--system-prompt", role.system_prompt(), "--tools", ",".join(tools) if tools else "",
     ]  # fmt: skip
@@ -65,8 +82,12 @@ class ClaudeCodeBackend:
 
     def _run(self, cmd: list[str], prompt: str, cwd: Path, home: Path) -> dict[str, Any]:
         home.mkdir(parents=True, exist_ok=True)
+        creds = credential_env()
+        if not creds:
+            raise BackendError("claude-code backend needs FACTORY_CLAUDE_CODE_OAUTH_TOKEN or FACTORY_ANTHROPIC_API_KEY")
+        cmd = [isolation_flag(creds) if c == "--bare" else c for c in cmd]
         proc = subprocess.run(
-            cmd, input=prompt, cwd=cwd, env=scrubbed_env(home, credential_env()),
+            cmd, input=prompt, cwd=cwd, env=scrubbed_env(home, creds),
             capture_output=True, text=True, timeout=self.timeout, check=False,
         )  # fmt: skip
         if proc.returncode != 0:

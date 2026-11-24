@@ -41,6 +41,10 @@ In Actions this split is enforced by GitHub rather than only by this code. The `
 
 ## Known gaps (honest list)
 
+- **A subscription token is broader than a virtual key.** `CLAUDE_CODE_OAUTH_TOKEN` cannot be budget-capped or
+  scoped the way a LiteLLM key can, so it lives only in the agents job, reaches only the `claude` child process,
+  and that process runs with `--safe-mode --restricted` and file tools only. Rotate it if a run ever looks wrong.
+
 - **The model key is still a secret inside the agents job.** Use a LiteLLM virtual key with a small budget and a
   short expiry, so a leaked key is cheap and revocable.
 - **The litellm backend's agents run in-process.** They have no tool that reads env or runs commands, but the

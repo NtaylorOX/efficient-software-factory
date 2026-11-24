@@ -109,9 +109,11 @@ Chromium, the ledger and the traces.
 
 1. **Enable Actions** on the repo (Settings → Actions → General → allow actions) and merge this to `main`. Workflows on
    the `issues` event run only from the default branch.
-2. **Pick a backend** with the repository variable `FACTORY_BACKEND`:
-   - `claude-code`: add the secret `FACTORY_ANTHROPIC_API_KEY`. The tiers map to Claude Code's `haiku`, `sonnet` and `opus`.
-   - `litellm` (default): add the secret `LITELLM_API_KEY` (a [virtual key](https://docs.litellm.ai/docs/proxy/virtual_keys)
+2. **Pick a backend** with the repository variable `FACTORY_BACKEND` (default `claude-code`):
+   - `claude-code` on your Claude subscription: run `claude setup-token` locally and save the result as the secret
+     `CLAUDE_CODE_OAUTH_TOKEN`. Usage counts against your plan's limits, not API billing. (An API key in
+     `FACTORY_ANTHROPIC_API_KEY` also works.) The tiers map to Claude Code's `haiku`, `sonnet` and `opus`.
+   - `litellm`: add the secret `LITELLM_API_KEY` (a [virtual key](https://docs.litellm.ai/docs/proxy/virtual_keys)
      with a budget) and the variable `LITELLM_BASE_URL`. The proxy must be reachable from GitHub's runners, so a
      proxy on your laptop is not.
 3. **File an issue** with the *Factory ticket* template, or add the `factory` label to any issue. Watch the status

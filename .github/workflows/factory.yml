@@ -35,6 +35,7 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}                  # read-only here; agents never see it (scrubbed env)
       LITELLM_BASE_URL: ${{ vars.LITELLM_BASE_URL }}
       LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}    # use a LiteLLM virtual key with a budget and expiry
+      FACTORY_CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}  # claude-code on your subscription
       FACTORY_ANTHROPIC_API_KEY: ${{ secrets.FACTORY_ANTHROPIC_API_KEY }}  # only for the claude-code backend
       FACTORY_ANTHROPIC_BASE_URL: ${{ vars.FACTORY_ANTHROPIC_BASE_URL }}
     steps:
@@ -45,11 +46,11 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv sync --all-extras --frozen
       - run: uv run playwright install --with-deps chromium
-      - name: Install Claude Code (claude-code backend only)
-        if: vars.FACTORY_BACKEND == 'claude-code'
+      - name: Install Claude Code (default backend)
+        if: vars.FACTORY_BACKEND != 'litellm'
         run: npm install -g @anthropic-ai/claude-code
       - name: Run the agents (no write access)
-        run: uv run factory --backend "${{ vars.FACTORY_BACKEND || 'litellm' }}" run --ticket "$TICKET" --defer-publish
+        run: uv run factory --backend "${{ vars.FACTORY_BACKEND || 'claude-code' }}" run --ticket "$TICKET" --defer-publish
       - name: Timeline to the job summary
         if: always()
         run: uv run factory trace >> "$GITHUB_STEP_SUMMARY"
