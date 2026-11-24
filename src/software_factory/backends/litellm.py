@@ -14,8 +14,8 @@ from openai import OpenAI
 
 from software_factory.backends.base import BackendError, T, parse_json, schema_instruction
 from software_factory.config import Role
+from software_factory.hooks import Guard
 from software_factory.models import Usage
-from software_factory.sandbox import Workspace
 from software_factory.tools import call_tool, openai_tool_specs
 
 
@@ -59,12 +59,12 @@ class LiteLLMBackend:
                 ]
         raise AssertionError("unreachable")
 
-    def agentic(self, role: Role, task: str, ws: Workspace, model: str, home: Path) -> tuple[str, Usage]:
+    def agentic(self, role: Role, task: str, guard: Guard, model: str, home: Path) -> tuple[str, Usage]:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": role.system_prompt()},
             {"role": "user", "content": task},
         ]
-        usage, specs = Usage(), openai_tool_specs(role.tools)
+        usage, specs, sent_back = Usage(), openai_tool_specs(role.tools), False
         for _ in range(role.max_turns):
             resp = self.client.chat.completions.create(
                 model=model, messages=messages, tools=specs, max_tokens=role.max_output_tokens, temperature=0
@@ -74,8 +74,12 @@ class LiteLLMBackend:
             calls = msg.tool_calls or []
             messages.append(msg.model_dump(exclude_none=True))
             if not calls:
-                return msg.content or "", usage
+                if (reason := guard.stop(sent_back)) is None:  # the same stop gate as the Claude Code Stop hook
+                    return msg.content or "", usage
+                messages.append({"role": "user", "content": reason})
+                sent_back = True
+                continue
             for call in calls:
-                result = call_tool(ws, role.tools, call.function.name, call.function.arguments)
+                result = call_tool(guard, call.function.name, call.function.arguments)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
         raise BackendError(f"{role.name} hit its turn budget ({role.max_turns}) without finishing")

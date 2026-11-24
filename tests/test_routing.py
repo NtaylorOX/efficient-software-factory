@@ -31,7 +31,8 @@ def test_model_routing_by_lane_and_escalation() -> None:
     cfg = load_config(ROOT)
     assert cfg.model_for("triage") == ("fast", "claude-haiku")
     assert cfg.model_for("planner", "fast") == ("fast", "claude-haiku")
-    assert cfg.model_for("planner", "complex") == ("frontier", "claude-opus")
+    assert cfg.model_for("spec", "complex") == ("frontier", "claude-opus")  # the spec is where the thinking goes
+    assert cfg.model_for("planner", "complex") == ("standard", "claude-sonnet")
     assert cfg.model_for("coder", "complex", attempt=1) == ("standard", "claude-sonnet")
     assert cfg.model_for("coder", "complex", attempt=2) == ("frontier", "claude-opus")
     assert cfg.model_for("coder", "complex", attempt=5) == ("frontier", "claude-opus")  # capped at the top tier

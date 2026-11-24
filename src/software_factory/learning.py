@@ -22,14 +22,14 @@ from software_factory.forge import ReviewComment
 from software_factory.models import Lesson, Retro, Usage
 from software_factory.state import Run, find_secrets
 
-LEARNABLE_ROLES = ("planner", "coder", "qa", "reviewer")
+LEARNABLE_ROLES = ("spec", "planner", "coder", "qa", "reviewer")
 MAX_LESSONS_PER_ROLE = 12  # oldest drop off: lessons cost tokens on every call
 
 # A lesson that matches any of these is about the factory's controls, not about doing the work well.
 FORBIDDEN = re.compile(
     r"(?i)\b(ignore|disregard|override)\b.*\b(instruction|rule|polic)|"
     r"\b(permission|allowlist|allow-list|protected|approval|approve label|sandbox|credential|token|secret|"
-    r"api[ _-]?key|password|\.github|factory\.yaml|curl|wget|http[s]?://|base64|exfiltrat)"
+    r"api[ _-]?key|password|\.github|factory\.yaml|hooks?|guard|claude\.md|curl|wget|http[s]?://|base64|exfiltrat)"
 )
 
 
@@ -44,6 +44,10 @@ def run_digest(r: Run) -> str:
             lines.append(f"stage {ev['stage']} {json.dumps(extra)[:300] if extra else ''}".strip())
         elif ev["kind"] == "verify" and not ev["passed"]:
             lines.append(f"verify failed: violations={ev['violations']} exit_codes={ev['exit_codes']}")
+        elif ev["kind"] == "stop_gate" and ev["problems"]:
+            lines.append(f"stop gate {'sent the coder back' if ev['blocked'] else 'let it finish'}: {ev['problems']}")
+        elif ev["kind"] == "tool" and not ev.get("allowed", True):
+            lines.append(f"tool call denied: {ev.get('tool')} {ev.get('target')}: {ev.get('reason')}")
         elif ev["kind"] == "error":
             lines.append(f"agent error: {ev['error'][:300]}")
     if r.has("verify"):

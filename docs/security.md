@@ -12,8 +12,8 @@ no step should hold all three of: untrusted input, secrets or write access, and 
 
 | Component | Untrusted input | Secrets / write access | Outbound |
 |---|---|---|---|
-| planner, coder, QA, reviewer, retro (agents) | yes | **no**: no GitHub token; at most a budget-limited model key | model proxy only |
-| policy, verify (code) | reads the diff | no | no |
+| triage, spec, planner, coder, QA, reviewer, retro (agents) | yes | **no**: no GitHub token; at most a budget-limited model key | model proxy only |
+| policy, verify, guard and hooks (code) | reads the diff and tool calls | no | no |
 | publisher (code, no model) | the diff, re-checked | **yes**: GitHub write | GitHub only |
 
 In Actions this split is enforced by GitHub rather than only by this code. The `agents` job has
@@ -24,9 +24,11 @@ In Actions this split is enforced by GitHub rather than only by this code. The `
 | Threat | Mitigation | Where |
 |---|---|---|
 | Issue says "ignore your rules, edit CI" | plan touching `protected_paths` is rejected before coding; coder cannot write protected or unplanned paths | `policy.gate_plan`, `sandbox.Workspace` |
-| Agent reads secrets from env or `/proc` | child processes get an allowlisted env with a throwaway `HOME`; Claude Code runs `--bare --restricted` (no Bash, file tools confined to the worktree) | `sandbox.scrubbed_env`, `backends/claude_code.py` |
+| Agent reads secrets from env or `/proc` | child processes get an allowlisted env with a throwaway `HOME`; Claude Code runs `--restricted` (no Bash, file tools confined to the worktree); the PreToolUse hook denies `.env`, `.git` and anything outside the worktree, including `/proc` | `sandbox.scrubbed_env`, `backends/claude_code.py`, `hooks.Guard` |
+| Agent edits its own rules or the spec it is judged against | the guard file lives in the run folder, outside the worktree; `specs/`, `changes/`, `CLAUDE.md`, `AGENTS.md` and `.claude/` are protected paths, and the change folder is rendered by code from the checked spec | `hooks.Guard`, `pipeline.archive`, `policy.check_change` |
 | Agent escapes the workspace (`..`, symlinks, absolute paths) | every path is resolved and must stay under the worktree | `Workspace.resolve` |
-| Agent claims tests pass | the factory runs `verify_commands` itself; QA needs a real `expect` step to pass | `pipeline.verify`, `qa.run_qa` |
+| A repo file adds hooks, skills or MCP servers to the agent | `--restricted` ignores project settings, `--strict-mcp-config` loads no MCP, `--disable-slash-commands` loads no skills; only our `--settings` apply | `backends/claude_code.py` |
+| Agent claims tests pass, or writes tests that prove nothing | the factory runs `verify_commands` itself; every scenario must be named by an added test or confirmed by QA; QA needs a real `expect` step to pass | `pipeline.verify`, `policy.check_traceability`, `qa.run_qa` |
 | Secret committed in a diff | added lines are scanned before verify and again at publish | `policy.check_change`, `state.SECRET_PATTERNS` |
 | Compromised agent job tampers with the bundle | publisher re-applies the diff to a clean base and re-runs `check_change` | `publisher.publish_bundle` |
 | Browser QA phones home | Playwright aborts every request that is not the app on localhost | `qa.run_qa` |
@@ -43,7 +45,11 @@ In Actions this split is enforced by GitHub rather than only by this code. The `
 
 - **A subscription token is broader than a virtual key.** `CLAUDE_CODE_OAUTH_TOKEN` cannot be budget-capped or
   scoped the way a LiteLLM key can, so it lives only in the agents job, reaches only the `claude` child process,
-  and that process runs with `--safe-mode --restricted` and file tools only. Rotate it if a run ever looks wrong.
+  and that process runs with `--restricted` and file tools only. Rotate it if a run ever looks wrong.
+- **Hook processes inherit the `claude` child's env**, which includes its model credential. The hooks are our own
+  code, take no input but the tool call's JSON, and run the stop gate's commands with a scrubbed env.
+- **CLAUDE.md is still read by Claude Code.** It comes from the reviewed base branch and agents cannot write it, but
+  anything merged into it reaches every coder session.
 
 - **The model key is still a secret inside the agents job.** Use a LiteLLM virtual key with a small budget and a
   short expiry, so a leaked key is cheap and revocable.

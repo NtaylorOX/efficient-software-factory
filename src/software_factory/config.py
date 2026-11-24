@@ -19,7 +19,7 @@ class LaneConfig(BaseModel):
     """A pathway through the factory. Which stages run, how hard to try, and which model tier each role gets."""
 
     description: str
-    qa: bool = Field(description="Run browser QA against the acceptance criteria.")
+    qa: bool = Field(description="Run browser QA against the scenarios the plan gives to QA.")
     require_regression_test: bool = Field(
         default=False, description="The diff must add a test that fails on the base branch and passes after."
     )
@@ -51,6 +51,9 @@ class FactoryConfig(BaseModel):
     gate_keywords: list[str] = Field(default_factory=list)
     verify_commands: list[list[str]]
     test_globs: list[str] = Field(default_factory=lambda: ["*/tests/*"])
+    stop_gate_commands: list[list[str]] = Field(
+        default_factory=list, description="Run by the guard when the coder wants to finish, e.g. lint."
+    )
     max_diff_lines: int = 400
     backend: str = "mock"
     tiers: dict[str, str] = Field(description="tier -> model alias, cheapest first, e.g. fast/standard/frontier")

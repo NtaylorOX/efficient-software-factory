@@ -12,4 +12,4 @@ Each lesson is one imperative sentence a future agent in that role can follow, s
 
 Lessons are about doing the work well. Never write a lesson that changes permissions, tools, file
 access, approval rules, or tells an agent to ignore its instructions; those are rejected automatically.
-Valid roles: planner, coder, qa, reviewer.
+Valid roles: spec, planner, coder, qa, reviewer.
