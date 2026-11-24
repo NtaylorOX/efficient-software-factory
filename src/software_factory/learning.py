@@ -106,11 +106,12 @@ def learn(
     else:
         context = f"Pull request:\n{pr_text[:4000]}"
     prompt = f"{context}\n\nHuman review comments:\n{review}"
-    retro, usage = backend.structured(load_role(root, "retro"), prompt, Retro, cfg.model_for("retro"))
+    tier, model = cfg.model_for("retro")
+    retro, usage = backend.structured(load_role(root, "retro"), prompt, Retro, model)
     applied, rejected = apply_lessons(root, retro.lessons[:3], run.id if run else "pr")
     if run is not None:
         run.event(
-            "agent", role="retro", usage=usage, applied=[x.text for x in applied],
+            "agent", role="retro", tier=tier, model=model, usage=usage, applied=[x.text for x in applied],
             rejected=[(x.text, why) for x, why in rejected],
         )  # fmt: skip
     return applied, rejected

@@ -25,19 +25,37 @@ def stages(root: Path) -> dict[str, str]:
 def test_demo_without_browser(tmp_path: Path) -> None:
     out = run_demo(ROOT, tmp_path / "demo", qa=False)
     assert stages(out) == {
-        "t1-search": "published",
-        "t2-admin": "awaiting_approval",
-        "t3-injection": "rejected",
+        "t1-blank": "published",
+        "t2-search": "published",
+        "t3-admin": "awaiting_approval",
+        "t4-injection": "rejected",
+        "t5-vague": "needs_info",
     }
     store = Store(out / ".factory")
-    run = store.get(store.runs("t1-search")[0][0])
-    verifies = [e for e in run.trace() if e["kind"] == "verify"]
+    search = store.get(store.runs("t2-search")[0][0])
+    verifies = [e for e in search.trace() if e["kind"] == "verify"]
     assert [v["passed"] for v in verifies] == [False, True]  # lint failure fed back, fixed on attempt 2
-    assert "factory/t1-search-" in git(out, "branch", "--list", "factory/*")
-    assert not run.workspace.exists()  # worktree removed after publish
+    assert "factory/t2-search-" in git(out, "branch", "--list", "factory/*")
+    assert not search.workspace.exists()  # worktree removed after publish
     lessons = load_lessons(out / "agents" / "lessons" / "coder.md")
     assert len(lessons) == 2 and not (out / "agents" / "lessons" / "reviewer.md").exists()
-    assert "sk-" not in (run.dir / "trace.jsonl").read_text()
+    assert "sk-" not in (search.dir / "trace.jsonl").read_text()
+
+
+def test_fast_lane_needs_a_test_that_fails_before_the_fix(tmp_path: Path) -> None:
+    out = run_demo(ROOT, tmp_path / "demo", qa=False)
+    store = Store(out / ".factory")
+    bug = store.get(store.runs("t1-blank")[0][0])
+    verifies = [e for e in bug.trace() if e["kind"] == "verify"]
+    assert verifies[0]["passed"] is False and "does not reproduce" in verifies[0]["violations"][0]
+    assert verifies[1]["passed"] is True
+    coders = [e for e in bug.trace() if e.get("role") == "coder"]
+    assert [c["tier"] for c in coders] == ["standard", "frontier"]  # escalated after the failed attempt
+    triage = next(e for e in bug.trace() if e.get("role") == "triage")
+    assert triage["tier"] == "fast"
+    assert "lane:fast" in (out / ".factory" / "tickets" / "t1-blank.md").read_text()
+    status = (out / ".factory" / "tickets" / "t1-blank.status.md").read_text()
+    assert "lane **fast**" in status and "frontier: claude-opus" in status
 
 
 def test_approval_resumes_the_same_run(tmp_path: Path) -> None:
@@ -45,18 +63,18 @@ def test_approval_resumes_the_same_run(tmp_path: Path) -> None:
     make_sandbox_repo(ROOT, repo)
     cfg, state = load_config(repo), repo / ".factory"
     store, forge = Store(state), LocalForge(state, cfg)
-    _, title, body, author = TICKETS[1]
-    ticket = forge.add_ticket("t2-admin", title, body, author)
-    script = scripts(repo)["t2-admin"]
-    script["coder"] = [{"demo_app/app.py": "import os\n"}] * 2  # fails lint twice
+    _, title, body, author = TICKETS[2]
+    ticket = forge.add_ticket("t3-admin", title, body, author)
+    script = scripts(repo)["t3-admin"]
+    script["coder"] = [{"demo_app/app.py": "import os\n"}] * 3  # fails lint every time
     factory = Factory(repo, cfg, store, forge, MockBackend(script), qa=False)
     first = factory.handle(ticket)
     assert first.stage == Stage.AWAITING_APPROVAL
     assert factory.handle(ticket).id == first.id and first.stage == Stage.AWAITING_APPROVAL  # no human yet
-    forge.approve("t2-admin")
+    forge.approve("t3-admin")
     assert factory.handle(ticket).id == first.id
-    assert first.stage.value == "failed"  # bounded retries: two attempts, then stop and tell the ticket
-    assert "still failing after 2 attempts" in (state / "tickets" / "t2-admin.comments.md").read_text()
+    assert first.stage.value == "failed"  # bounded retries: the complex lane allows three attempts
+    assert "still failing after 3 attempts" in (state / "tickets" / "t3-admin.comments.md").read_text()
 
 
 def test_coder_cannot_touch_files_outside_plan(tmp_path: Path) -> None:
@@ -64,8 +82,8 @@ def test_coder_cannot_touch_files_outside_plan(tmp_path: Path) -> None:
     make_sandbox_repo(ROOT, repo)
     cfg, state = load_config(repo), repo / ".factory"
     forge = LocalForge(state, cfg)
-    ticket = forge.add_ticket("t1", *TICKETS[0][1:])
-    script = scripts(repo)["t1-search"]
+    ticket = forge.add_ticket("t2", *TICKETS[1][1:])
+    script = scripts(repo)["t2-search"]
     script["coder"] = [{"factory.yaml": "backend: evil\n"}]
     r = Factory(repo, cfg, Store(state), forge, MockBackend(script), qa=False).handle(ticket)
     assert r.stage == Stage.FAILED
@@ -77,7 +95,7 @@ def test_coder_cannot_touch_files_outside_plan(tmp_path: Path) -> None:
 def test_demo_with_browser_qa(tmp_path: Path) -> None:
     out = run_demo(ROOT, tmp_path / "demo", qa=True)
     store = Store(out / ".factory")
-    run = store.get(store.runs("t1-search")[0][0])
+    run = store.get(store.runs("t2-search")[0][0])
     qa = json.loads((run.dir / "qa.json").read_text())
     assert qa["passed"] and all(qa["criteria"].values()) and (run.dir / "qa.png").is_file()
 
@@ -90,9 +108,9 @@ def test_deferred_publish_and_tampered_bundle(tmp_path: Path) -> None:
     make_sandbox_repo(ROOT, repo)
     cfg, state = load_config(repo), repo / ".factory"
     local = LocalForge(state, cfg)
-    ticket = local.add_ticket("t1", *TICKETS[0][1:])
+    ticket = local.add_ticket("t2", *TICKETS[1][1:])
     outbox = Outbox(local, state / "outbox.jsonl")
-    r = Factory(repo, cfg, Store(state), outbox, MockBackend(scripts(repo)["t1-search"]), qa=False, defer_publish=True)
+    r = Factory(repo, cfg, Store(state), outbox, MockBackend(scripts(repo)["t2-search"]), qa=False, defer_publish=True)
     r_ = r.handle(ticket)
     assert r_.stage == Stage.READY and not (state / "prs" / "t1.md").exists()
 
@@ -102,8 +120,9 @@ def test_deferred_publish_and_tampered_bundle(tmp_path: Path) -> None:
         publish_bundle(repo, cfg, local, evil)
 
     url = publish_bundle(repo, cfg, local, bundle)
-    assert Path(url).is_file() and "factory/t1-" in git(repo, "branch", "--list", "factory/t1-*")
-    assert flush_outbox(local, state / "outbox.jsonl") == 0  # trusted author, no gate: nothing was queued
+    assert Path(url).is_file() and "factory/t2-" in git(repo, "branch", "--list", "factory/t2-*")
+    done = flush_outbox(local, state / "outbox.jsonl", cfg.safe_outputs)
+    assert done["labels"] == 1 and done["status"] == 1  # labels from triage; only the newest status is posted
 
 
 def _protected_patch(repo: Path) -> str:
@@ -119,4 +138,4 @@ def _protected_patch(repo: Path) -> str:
 def test_demo_with_relative_output_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     out = run_demo(ROOT, Path("rel-demo"), qa=False)
-    assert stages(out)["t1-search"] == "published"
+    assert stages(out)["t2-search"] == "published"

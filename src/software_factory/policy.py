@@ -1,4 +1,7 @@
-"""Deterministic security policy. No model is consulted here: these are the decisions a human signs off.
+"""Deterministic policy. No model is consulted here: these are the decisions a human signs off.
+
+Routing:
+- `route` turns the triage agent's classification into a lane. The model labels; code decides.
 
 Two checks:
 - `gate_plan` before any code is written: is the plan allowed, and does a human need to approve it?
@@ -10,12 +13,27 @@ from __future__ import annotations
 import fnmatch
 
 from software_factory.config import FactoryConfig
-from software_factory.models import Change, GateDecision, Plan, Ticket
+from software_factory.models import Change, GateDecision, Plan, Route, Ticket, TicketKind, Triage
 from software_factory.state import find_secrets
 
 
 def _matches(path: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(path, p) for p in patterns)
+
+
+SIZES = "SML"
+
+
+def route(cfg: FactoryConfig, triage: Triage) -> Route:
+    if triage.kind in (TicketKind.QUESTION, TicketKind.OUT_OF_SCOPE):
+        return Route(lane=None, reasons=[f"{triage.kind.value}: no code change needed"])
+    if triage.missing_info:
+        return Route(lane=None, reasons=["needs info: " + "; ".join(triage.missing_info)])
+    small = SIZES.index(triage.size) <= SIZES.index(cfg.max_fast_size)
+    if triage.kind.value in cfg.fast_kinds and small:
+        return Route(lane="fast", reasons=[f"{triage.kind.value}, size {triage.size}"])
+    why = f"size {triage.size} is above {cfg.max_fast_size}" if not small else f"{triage.kind.value} work"
+    return Route(lane="complex", reasons=[why])
 
 
 def gate_plan(cfg: FactoryConfig, ticket: Ticket, plan: Plan, approved: bool) -> GateDecision:

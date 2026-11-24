@@ -1,4 +1,5 @@
-# Issue labelled `factory` (or `factory-approved`) -> agents -> publisher -> pull request.
+# Issue labelled `factory` (or `factory-approved`) -> triage -> fast/complex lane -> publisher -> pull request.
+# This is the primary trigger path. `factory watch` on a laptop is the same pipeline, polled.
 #
 # Two jobs, so no job holds untrusted input, a model key and write access at once ("Rule of Two"):
 #   agents   reads the issue, has a model key, and a READ-ONLY token. It writes a bundle (diff + PR text)
@@ -10,7 +11,7 @@ name: factory
 
 on:
   issues:
-    types: [labeled]
+    types: [opened, labeled]   # opened: issues filed from the "Factory ticket" template already carry the label
 
 concurrency:
   group: factory-issue-${{ github.event.issue.number }}
@@ -20,7 +21,9 @@ permissions: {}
 
 jobs:
   agents:
-    if: github.event.label.name == 'factory' || github.event.label.name == 'factory-approved'
+    if: >-
+      (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'factory')) ||
+      (github.event.action == 'labeled' && (github.event.label.name == 'factory' || github.event.label.name == 'factory-approved'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -42,8 +45,14 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv sync --all-extras --frozen
       - run: uv run playwright install --with-deps chromium
+      - name: Install Claude Code (claude-code backend only)
+        if: vars.FACTORY_BACKEND == 'claude-code'
+        run: npm install -g @anthropic-ai/claude-code
       - name: Run the agents (no write access)
         run: uv run factory --backend "${{ vars.FACTORY_BACKEND || 'litellm' }}" run --ticket "$TICKET" --defer-publish
+      - name: Timeline to the job summary
+        if: always()
+        run: uv run factory trace >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -78,3 +87,6 @@ jobs:
           path: .factory
       - name: Publish (deterministic, no model)
         run: uv run factory publish
+      - name: Timeline to the job summary
+        if: always()
+        run: uv run factory trace >> "$GITHUB_STEP_SUMMARY"

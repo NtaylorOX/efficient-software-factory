@@ -1,0 +1,16 @@
+name: Factory ticket
+description: Ask the software factory for a bug fix or a small feature. It triages, works, and opens a PR.
+labels: [factory]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What should change?
+      description: For a bug, say what you did, what happened, and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: How will we know it is done?
+      description: Optional. Checks a tester could do in the app.

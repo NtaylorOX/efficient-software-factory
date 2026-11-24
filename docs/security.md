@@ -32,6 +32,10 @@ In Actions this split is enforced by GitHub rather than only by this code. The `
 | Browser QA phones home | Playwright aborts every request that is not the app on localhost | `qa.run_qa` |
 | Random commenter poisons the learning loop | only `trusted_reviewers` reach the retro agent; lessons about tools, paths, approval or secrets are rejected | `learning.learn`, `learning.validate` |
 | Secrets in traces or PR bodies | artifacts and traces are redacted on write | `state.redact` |
+| Factory pointed at, or tricked into, another repo | `allowed_repos` is checked when config loads; the GitHub client is bound to one repo's API URL, and any PR or issue URL from elsewhere raises `RepoScopeError`; in Actions the token is repo-scoped too | `config.load_config`, `forge.GitHubForge` |
+| Agent side floods the issue or applies arbitrary labels | writes are queued, then replayed by the publisher under `safe_outputs`: comments capped per ticket, labels only with allowed prefixes, only the newest status | `publisher.flush_outbox` |
+| Triage is fooled into the cheap lane | the lane only changes models and checks, not permissions; the plan gate and diff checks apply in every lane | `policy.route`, `policy.gate_plan` |
+| Bug "fix" with a test that proves nothing | fast lane runs the new tests on a clean base checkout, and they must fail there | `Factory.regression_check` |
 | Untrusted author files a ticket | it waits for the `factory-approved` label, which only people with triage rights can add | `policy.gate_plan` |
 | Script injection in Actions | issue text never reaches a shell; only the issue number is passed, through env | `.github/workflows/factory.yml` |
 

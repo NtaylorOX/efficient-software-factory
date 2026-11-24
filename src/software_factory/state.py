@@ -147,7 +147,7 @@ class Store:
 
     def active_run(self, ticket_id: str) -> Run | None:
         """The ticket's unfinished run, so a re-trigger resumes it instead of starting a second one."""
-        done = {Stage.PUBLISHED, Stage.FAILED, Stage.REJECTED, Stage.READY}
+        done = {Stage.PUBLISHED, Stage.FAILED, Stage.REJECTED, Stage.READY, Stage.NEEDS_INFO, Stage.DECLINED}
         for run_id, _, stage in reversed(self.runs(ticket_id)):
             if Stage(stage) not in done:
                 return self.get(run_id)

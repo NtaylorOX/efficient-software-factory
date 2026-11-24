@@ -8,7 +8,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from software_factory import git
+from software_factory import git, tracking
 from software_factory.backends import make_backend
 from software_factory.config import load_config, load_role
 from software_factory.forge import Forge, GitHubForge, LocalForge
@@ -18,7 +18,7 @@ from software_factory.pipeline import Factory
 from software_factory.publisher import Bundle, Outbox, PublishError, flush_outbox, publish_bundle
 from software_factory.state import Store
 
-ROLES = ("planner", "coder", "qa", "reviewer", "retro")
+ROLES = ("triage", "planner", "coder", "qa", "reviewer", "retro")
 
 
 def _forge(root: Path) -> Forge:
@@ -61,7 +61,8 @@ def cmd_status(args: argparse.Namespace) -> None:
     store = Store(Path(args.root).resolve() / ".factory")
     for run_id, ticket, stage in store.runs():
         tokens = store.get(run_id).tokens()
-        print(f"{run_id}  {ticket:20} {stage:18} tokens {tokens.input_tokens}/{tokens.output_tokens}")
+        lane = tracking.lane_of(store.get(run_id))
+        print(f"{run_id}  {ticket:20} {lane:8} {stage:18} tokens {tokens.input_tokens}/{tokens.output_tokens}")
 
 
 def cmd_ticket(args: argparse.Namespace) -> None:
@@ -116,7 +117,7 @@ def cmd_publish(args: argparse.Namespace) -> None:
     root = Path(args.root).resolve()
     cfg, state = load_config(root), root / ".factory"
     forge = _forge(root)
-    print(f"posted {flush_outbox(forge, state / 'outbox.jsonl')} queued comments")
+    print(f"safe outputs: {flush_outbox(forge, state / 'outbox.jsonl', cfg.safe_outputs)}")
     store = Store(state)
     for run_id, _, stage in store.runs():
         if stage != Stage.READY.value:
@@ -140,6 +141,15 @@ def cmd_publish(args: argparse.Namespace) -> None:
             forge.merge_pr(url)  # lesson-only, re-validated diff: the one change that needs no human
         lessons.unlink()
         print(f"lessons: {url}")
+
+
+def cmd_trace(args: argparse.Namespace) -> None:
+    """One run's timeline, or every run's (for the Actions job summary)."""
+    store = Store(Path(args.root).resolve() / ".factory")
+    ids = [args.run] if args.run else [run_id for run_id, _, _ in store.runs()]
+    for run_id in ids:
+        r = store.get(run_id)
+        print(tracking.summary_json(r) if args.json else tracking.timeline(r) + "\n")
 
 
 def cmd_cards(args: argparse.Namespace) -> None:
@@ -170,6 +180,10 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--interval", type=int, default=60)
     s.set_defaults(fn=cmd_watch)
     sub.add_parser("status", help="list runs").set_defaults(fn=cmd_status)
+    s = sub.add_parser("trace", help="step-by-step timeline of a run (all runs if no id)")
+    s.add_argument("run", nargs="?")
+    s.add_argument("--json", action="store_true", help="machine-readable roll-up per run")
+    s.set_defaults(fn=cmd_trace)
     s = sub.add_parser("ticket", help="add a local ticket")
     s.add_argument("id")
     s.add_argument("title")

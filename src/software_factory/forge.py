@@ -34,6 +34,15 @@ class Forge(Protocol):
     def open_pr(self, ticket: Ticket, branch: str, title: str, body: str, draft: bool, repo: Path) -> str: ...
     def review_comments(self, pr: str) -> list[ReviewComment]: ...
     def pr_text(self, pr: str) -> str: ...
+    def add_labels(self, ticket: Ticket, labels: list[str]) -> None: ...
+    def upsert_status(self, ticket: Ticket, body: str) -> None: ...
+
+
+class RepoScopeError(Exception):
+    pass
+
+
+STATUS_MARKER = "<!-- factory-status -->"  # the one comment per ticket the factory edits in place
 
 
 class LocalForge:
@@ -75,6 +84,16 @@ class LocalForge:
         with (self.tickets_dir / f"{ticket.id}.comments.md").open("a") as f:
             f.write(f"\n---\n{body}\n")
 
+    def add_labels(self, ticket: Ticket, labels: list[str]) -> None:
+        path = self.tickets_dir / f"{ticket.id}.md"
+        meta, body = split_frontmatter(path.read_text())
+        current = [str(x) for x in meta.get("labels", []) or []]  # type: ignore[attr-defined]
+        meta["labels"] = current + [lb for lb in labels if lb not in current]
+        path.write_text(f"---\n{yaml.safe_dump(meta)}---\n{body}\n")
+
+    def upsert_status(self, ticket: Ticket, body: str) -> None:
+        (self.tickets_dir / f"{ticket.id}.status.md").write_text(f"{STATUS_MARKER}\n{body}\n")
+
     def open_pr(self, ticket: Ticket, branch: str, title: str, body: str, draft: bool, repo: Path) -> str:
         path = self.prs_dir / f"{ticket.id}.md"
         path.write_text(f"# {'[draft] ' if draft else ''}{title}\n\nbranch: `{branch}`\n\n{body}\n")
@@ -94,7 +113,11 @@ class GitHubForge:
     """GitHub REST. The token comes from FACTORY_GITHUB_TOKEN (falls back to GITHUB_TOKEN in Actions)."""
 
     def __init__(self, cfg: FactoryConfig, token: str | None = None) -> None:
+        if not cfg.repo or cfg.repo.lower() not in {r.lower() for r in cfg.allowed_repos}:
+            raise RepoScopeError(f"repo {cfg.repo!r} is not in allowed_repos")
         self.cfg = cfg
+        # Every request goes through this client, whose base URL is the one allowed repo. There is no code path
+        # that builds a URL for another repo, and PR or issue URLs from outside are refused by `_number_from`.
         self._token = token or os.environ.get("FACTORY_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
         self.http = httpx.Client(
             base_url=f"https://api.github.com/repos/{cfg.repo}",
@@ -118,7 +141,29 @@ class GitHubForge:
         return [self._ticket(i) for i in resp.json() if "pull_request" not in i]
 
     def _number(self, ticket: Ticket) -> str:
+        if ticket.url:
+            return self._number_from(ticket.url)
         return ticket.id.removeprefix("gh")
+
+    def _number_from(self, url: str) -> str:
+        prefix = f"https://github.com/{self.cfg.repo}/".lower()
+        if not url.lower().startswith(prefix):
+            raise RepoScopeError(f"{url!r} is outside the target repo {self.cfg.repo}")
+        return url.rstrip("/").rsplit("/", 1)[-1]
+
+    def add_labels(self, ticket: Ticket, labels: list[str]) -> None:
+        self.http.post(f"/issues/{self._number(ticket)}/labels", json={"labels": labels}).raise_for_status()
+
+    def upsert_status(self, ticket: Ticket, body: str) -> None:
+        number = self._number(ticket)
+        resp = self.http.get(f"/issues/{number}/comments", params={"per_page": 100})
+        resp.raise_for_status()
+        mine = [c for c in resp.json() if STATUS_MARKER in (c.get("body") or "")]
+        text = f"{STATUS_MARKER}\n{body}"
+        if mine:
+            self.http.patch(f"/issues/comments/{mine[-1]['id']}", json={"body": text}).raise_for_status()
+        else:
+            self.http.post(f"/issues/{number}/comments", json={"body": text}).raise_for_status()
 
     def is_approved(self, ticket: Ticket) -> bool:
         resp = self.http.get(f"/issues/{self._number(ticket)}/labels")
@@ -146,17 +191,15 @@ class GitHubForge:
         return str(resp.json()["html_url"])
 
     def pr_text(self, pr: str) -> str:
-        resp = self.http.get(f"/pulls/{pr.rstrip('/').rsplit('/', 1)[-1]}")
+        resp = self.http.get(f"/pulls/{self._number_from(pr)}")
         resp.raise_for_status()
         return f"# {resp.json()['title']}\n\n{resp.json().get('body') or ''}"
 
     def merge_pr(self, pr: str) -> None:
-        self.http.put(
-            f"/pulls/{pr.rstrip('/').rsplit('/', 1)[-1]}/merge", json={"merge_method": "squash"}
-        ).raise_for_status()
+        self.http.put(f"/pulls/{self._number_from(pr)}/merge", json={"merge_method": "squash"}).raise_for_status()
 
     def review_comments(self, pr: str) -> list[ReviewComment]:
-        number = pr.rstrip("/").rsplit("/", 1)[-1]
+        number = self._number_from(pr)
         out: list[ReviewComment] = []
         for path in (f"/pulls/{number}/comments", f"/pulls/{number}/reviews", f"/issues/{number}/comments"):
             resp = self.http.get(path)

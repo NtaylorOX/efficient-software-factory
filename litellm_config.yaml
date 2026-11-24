@@ -4,12 +4,14 @@
 # Use:    export LITELLM_BASE_URL=http://localhost:4000/v1 LITELLM_API_KEY=<virtual key>
 # Virtual keys with a budget and expiry (needs the proxy's database; see LiteLLM docs):
 #   curl -s localhost:4000/key/generate -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-#        -d '{"max_budget": 2, "duration": "1d", "models": ["claude-sonnet", "claude-haiku"]}'
+#        -d '{"max_budget": 2, "duration": "1d", "models": ["claude-haiku", "claude-sonnet", "claude-opus"]}'
 model_list:
-  - model_name: claude-sonnet              # planner, coder, reviewer, retro
+  - model_name: claude-sonnet              # standard tier: coder, reviewer, retro
     litellm_params: {model: anthropic/claude-sonnet-5-5, api_key: "os.environ/ANTHROPIC_API_KEY"}
-  - model_name: claude-haiku               # QA steps: many small calls
+  - model_name: claude-haiku               # fast tier: triage, QA steps, fast-lane planning
     litellm_params: {model: anthropic/claude-haiku-5-5, api_key: "os.environ/ANTHROPIC_API_KEY"}
+  - model_name: claude-opus                # frontier tier: complex-lane planning, coder escalation
+    litellm_params: {model: anthropic/claude-opus-5-5, api_key: "os.environ/ANTHROPIC_API_KEY"}
   - model_name: gpt                        # any other provider works the same way; model id unverified
     litellm_params: {model: openai/gpt-5, api_key: "os.environ/OPENAI_API_KEY"}
   - model_name: ollama-qwen3-8b            # local; fine for QA steps, weak as a coder

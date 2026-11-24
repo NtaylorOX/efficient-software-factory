@@ -5,17 +5,43 @@
 | Stage | Who | Reads | Writes | Notes |
 |---|---|---|---|---|
 | `received` | factory | issue | `ticket.json` | issue text is marked untrusted from here on |
-| `planned` | planner agent (structured, no tools) | ticket, file list and in-scope files from the **committed** base branch | `plan.json` | never sees `.factory/`, `.env` or uncommitted files |
+| `triaged` | triage agent (fast tier), then `policy.route` (code) | ticket | `triage.json`, `route.json`, labels | vague → `needs_info` with questions; question or out of scope → `declined` |
+| `planned` | planner agent (tier set by lane) | ticket, file list and in-scope files from the **committed** base branch | `plan.json` | never sees `.factory/`, `.env` or uncommitted files |
 | gate | `policy.gate_plan` (code) | plan, ticket, approval label | `gate.json` | protected path → `rejected`; untrusted author, gated path or keyword → `awaiting_approval` |
 | `approved` | coder agent (file tools only) | plan, previous failure output | worktree edits | worktree on `factory-work/<ticket>-<run>`; writes limited to the plan's files |
 | `coded` | factory | `git diff` | `change.json` | the diff comes from git, not from what the agent says it did |
-| `verified` | factory | worktree | `verify.json` | `policy.check_change`, then `verify_commands` with a scrubbed env and a command allowlist |
-| `qa_done` | QA agent + Playwright | acceptance criteria, accessibility snapshot | `qa.json`, `qa.png` | browser can reach only the app on localhost; a pass needs at least one successful `expect` step |
+| `verified` | factory | worktree | `verify.json` | `policy.check_change`, then `verify_commands` with a scrubbed env and a command allowlist; fast lane: the changed tests are run on a clean base checkout and must fail there |
+| `qa_done` | QA agent + Playwright (complex lane) | acceptance criteria, accessibility snapshot | `qa.json`, `qa.png` | browser can reach only the app on localhost; a pass needs at least one successful `expect` step |
 | `reviewed` | reviewer agent | plan, diff, check results, QA | `review.json` | security concerns turn the PR into a draft |
 | `ready` / `published` | publisher (code) | `bundle.json` | branch `factory/<ticket>-<run>`, PR | re-applies the diff to a clean checkout and re-checks it |
 
-Verify and QA failures go back to the coder with only the failure output, up to `max_code_attempts`. Then the run
-stops and comments on the ticket.
+Verify and QA failures go back to the coder with only the failure output, up to the lane's `max_code_attempts`.
+With `escalate_on_retry`, each retry runs the coder one tier higher. When attempts run out, the run stops and
+comments on the ticket.
+
+## Lanes and model routing
+
+| | fast lane | complex lane |
+|---|---|---|
+| for | bugs and chores sized S or M | features, and anything sized L |
+| planner | fast tier | frontier tier |
+| coder | standard, frontier on retry | standard, frontier on retry |
+| proof | a new test that fails on the base branch and passes with the fix | browser QA against the plan's acceptance criteria |
+| reviewer | fast tier | standard tier |
+| attempts | 2 | 3 |
+
+The triage model only labels the ticket (kind, size, missing info). `policy.route` turns the label into a lane, so the
+same triage always gives the same lane. A fooled triage cannot widen what the run may touch either, because the plan
+gate still applies (see demo ticket 4). Tiers map to LiteLLM aliases in `tiers`, or to Claude Code's own aliases in
+`backend_tiers`.
+
+## Tracking
+
+`tracking.timeline(run)` renders the trace as a Markdown table with one row per stage change, agent call (with tier,
+model and tokens) and verify result, plus timing. The factory posts it after every `advance()`: in Actions it goes in
+the job summary, and on the issue as one comment (marked `<!-- factory-status -->`) that is edited in place, so the
+issue shows live progress without spamming notifications. `factory trace --json` gives a roll-up per run for
+dashboards.
 
 ## Context and token discipline
 

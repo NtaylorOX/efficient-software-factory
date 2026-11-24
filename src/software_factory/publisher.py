@@ -19,7 +19,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from software_factory import git
-from software_factory.config import FactoryConfig
+from software_factory.config import FactoryConfig, SafeOutputs
 from software_factory.forge import Forge, ReviewComment
 from software_factory.learning import validate
 from software_factory.models import Change, Lesson, Ticket
@@ -81,7 +81,11 @@ def publish_bundle(root: Path, cfg: FactoryConfig, forge: Forge, bundle: Bundle)
 
 
 class Outbox:
-    """Wraps a forge for the agent side: reads go through, comments are queued for the publisher."""
+    """Wraps a forge for the agent side: reads go through, every write is queued as a "safe output".
+
+    The publisher replays the queue under caps from factory.yaml (`safe_outputs`): a bounded number of
+    comments per ticket, labels only with allowed prefixes, and only the latest status per ticket.
+    """
 
     def __init__(self, inner: Forge, path: Path) -> None:
         self.inner, self.path = inner, path
@@ -98,20 +102,52 @@ class Outbox:
     def pr_text(self, pr: str) -> str:
         return self.inner.pr_text(pr)
 
-    def comment(self, ticket: Ticket, body: str) -> None:
+    def _queue(self, kind: str, ticket: Ticket, payload: object) -> None:
         with self.path.open("a") as f:
-            f.write(json.dumps({"ticket": ticket.model_dump(), "body": body}) + "\n")
+            f.write(json.dumps({"kind": kind, "ticket": ticket.model_dump(), "payload": payload}) + "\n")
+
+    def comment(self, ticket: Ticket, body: str) -> None:
+        self._queue("comment", ticket, body)
+
+    def add_labels(self, ticket: Ticket, labels: list[str]) -> None:
+        self._queue("labels", ticket, labels)
+
+    def upsert_status(self, ticket: Ticket, body: str) -> None:
+        self._queue("status", ticket, body)
 
     def open_pr(self, ticket: Ticket, branch: str, title: str, body: str, draft: bool, repo: Path) -> str:
         raise PublishError("the agent side cannot open pull requests; write a bundle instead")
 
 
-def flush_outbox(forge: Forge, path: Path) -> int:
+def flush_outbox(forge: Forge, path: Path, caps: SafeOutputs) -> dict[str, int]:
+    """Replay queued writes under the caps. Returns counts of what was done and what was dropped."""
+    done = {"comment": 0, "labels": 0, "status": 0, "dropped": 0}
     if not path.is_file():
-        return 0
-    lines = path.read_text().splitlines()
-    for line in lines:
-        item = json.loads(line)
-        forge.comment(Ticket.model_validate(item["ticket"]), str(item["body"]))
+        return done
+    items = [json.loads(line) for line in path.read_text().splitlines()]
+    latest_status = {item["ticket"]["id"]: i for i, item in enumerate(items) if item["kind"] == "status"}
+    per_ticket: dict[str, int] = {}
+    for i, item in enumerate(items):
+        ticket, kind, payload = Ticket.model_validate(item["ticket"]), item["kind"], item["payload"]
+        if kind == "comment":
+            per_ticket[ticket.id] = per_ticket.get(ticket.id, 0) + 1
+            if per_ticket[ticket.id] > caps.max_comments_per_ticket:
+                done["dropped"] += 1
+                continue
+            forge.comment(ticket, str(payload))
+        elif kind == "labels":
+            allowed = [lb for lb in payload if any(str(lb).startswith(p) for p in caps.label_prefixes)]
+            done["dropped"] += len(payload) - len(allowed)
+            if not allowed:
+                continue
+            forge.add_labels(ticket, [str(lb) for lb in allowed])
+        elif kind == "status":
+            if latest_status[ticket.id] != i:
+                continue  # only the newest status per ticket is worth an API call
+            forge.upsert_status(ticket, str(payload))
+        else:
+            done["dropped"] += 1
+            continue
+        done[kind] += 1
     path.unlink()
-    return len(lines)
+    return done

@@ -15,8 +15,31 @@ class Mode(StrEnum):
     AGENTIC = "agentic"  # tool loop inside the workspace
 
 
+class LaneConfig(BaseModel):
+    """A pathway through the factory. Which stages run, how hard to try, and which model tier each role gets."""
+
+    description: str
+    qa: bool = Field(description="Run browser QA against the acceptance criteria.")
+    require_regression_test: bool = Field(
+        default=False, description="The diff must add a test that fails on the base branch and passes after."
+    )
+    max_code_attempts: int = 2
+    escalate_on_retry: bool = Field(default=False, description="The coder moves up one tier after a failed attempt.")
+    roles: dict[str, str] = Field(description="role -> tier name")
+
+
+class SafeOutputs(BaseModel):
+    """Caps on what the publisher will do for one run, however many requests the agent side queued."""
+
+    max_comments_per_ticket: int = 4
+    label_prefixes: list[str] = Field(default_factory=lambda: ["kind:", "lane:", "size:"])
+
+
 class FactoryConfig(BaseModel):
     repo: str = Field(description="owner/name on GitHub; empty for local-only runs")
+    allowed_repos: list[str] = Field(
+        default_factory=list, description="The only repos the factory may read tickets from or write to."
+    )
     base_branch: str = "main"
     trigger_label: str = "factory"
     approval_label: str = "factory-approved"
@@ -27,15 +50,35 @@ class FactoryConfig(BaseModel):
     gate_paths: list[str] = Field(default_factory=list, description="Writable, but a human approves first.")
     gate_keywords: list[str] = Field(default_factory=list)
     verify_commands: list[list[str]]
-    max_code_attempts: int = 2
+    test_globs: list[str] = Field(default_factory=lambda: ["*/tests/*"])
     max_diff_lines: int = 400
     backend: str = "mock"
-    models: dict[str, str] = Field(default_factory=dict, description="role -> model alias; key 'default'.")
+    tiers: dict[str, str] = Field(description="tier -> model alias, cheapest first, e.g. fast/standard/frontier")
+    backend_tiers: dict[str, dict[str, str]] = Field(
+        default_factory=dict, description="Per-backend tier -> model, e.g. Claude Code's own aliases."
+    )
+    triage_tier: str = "fast"
+    fast_kinds: list[str] = Field(default_factory=lambda: ["bug", "chore"])
+    max_fast_size: str = "M"
+    lanes: dict[str, LaneConfig]
+    safe_outputs: SafeOutputs = Field(default_factory=SafeOutputs)
     qa_app: str = "demo_app.app:app"
     auto_merge_lessons: bool = False
 
-    def model_for(self, role: str) -> str:
-        return self.models.get(role, self.models.get("default", "claude-sonnet"))
+    def tier_model(self, tier: str) -> str:
+        return self.backend_tiers.get(self.backend, self.tiers)[tier]
+
+    def model_for(self, role: str, lane: str | None = None, attempt: int = 1) -> tuple[str, str]:
+        """(tier, model) for a role in a lane. With escalate_on_retry, each retry moves the coder up a tier."""
+        if lane is None or role == "triage":
+            tier = self.triage_tier if role == "triage" else "standard"
+        else:
+            cfg = self.lanes[lane]
+            tier = cfg.roles.get(role, "standard")
+            if role == "coder" and cfg.escalate_on_retry and attempt > 1:
+                order = list(self.tiers)
+                tier = order[min(order.index(tier) + attempt - 1, len(order) - 1)]
+        return tier, self.tier_model(tier)
 
 
 class Role(BaseModel):
@@ -70,6 +113,8 @@ def load_config(root: Path) -> FactoryConfig:
     cfg = FactoryConfig.model_validate(yaml.safe_load((root / "factory.yaml").read_text()))
     if repo := os.environ.get("FACTORY_REPO"):  # set by the workflows to ${{ github.repository }}
         cfg.repo = repo
+    if cfg.repo and cfg.repo.lower() not in {r.lower() for r in cfg.allowed_repos}:
+        raise ValueError(f"repo {cfg.repo!r} is not in allowed_repos; the factory only works on its target repo")
     return cfg
 
 

@@ -7,12 +7,16 @@ folder and writes one artifact back, so a handoff is a small JSON file you can o
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 
 class Stage(StrEnum):
     RECEIVED = "received"
+    TRIAGED = "triaged"
+    NEEDS_INFO = "needs_info"  # triage found the ticket too vague; a re-trigger starts a fresh run
+    DECLINED = "declined"  # a question or out of scope: answered with a comment, no code
     PLANNED = "planned"
     AWAITING_APPROVAL = "awaiting_approval"
     APPROVED = "approved"
@@ -35,6 +39,31 @@ class Ticket(BaseModel):
     author: str = "unknown"
     url: str = ""
     labels: list[str] = Field(default_factory=list)
+
+
+class TicketKind(StrEnum):
+    BUG = "bug"
+    FEATURE = "feature"
+    CHORE = "chore"
+    QUESTION = "question"
+    OUT_OF_SCOPE = "out_of_scope"
+
+
+class Triage(BaseModel):
+    kind: TicketKind
+    size: Literal["S", "M", "L"] = Field(description="S: one file, M: a few files, L: a design decision.")
+    summary: str = Field(description="One sentence, in your words, of what is wanted.")
+    missing_info: list[str] = Field(
+        default_factory=list, description="Questions that must be answered before work can start."
+    )
+    repro: str = Field(default="", description="For bugs: how to see the problem.")
+
+
+class Route(BaseModel):
+    """The routing decision. Made by code from the triage, so it is reproducible and auditable."""
+
+    lane: str | None
+    reasons: list[str]
 
 
 class Plan(BaseModel):
@@ -68,6 +97,7 @@ class CommandResult(BaseModel):
 class Verification(BaseModel):
     passed: bool
     results: list[CommandResult]
+    regression: CommandResult | None = Field(default=None, description="Bug lane: new tests run on the base branch.")
     policy_violations: list[str] = Field(default_factory=list)
 
 
