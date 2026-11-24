@@ -1,0 +1,64 @@
+# What the factory may do. Agents never read or write this file; changing it is a human PR.
+repo: ""                       # owner/name, set to use GitHub; empty means local tickets in .factory/tickets/
+allowed_repos: [NtaylorOX/efficient-software-factory]   # the factory refuses to read or write any other repo
+base_branch: main
+trigger_label: factory
+approval_label: factory-approved   # only people with triage rights can add labels, so this is the human gate
+trusted_authors: [NtaylorOX]       # tickets from anyone else wait for the approval label
+trusted_reviewers: [NtaylorOX]     # only their review comments feed the learning loop
+
+workspace_scope: ["demo_app/*"]    # the coder can write here and nowhere else
+protected_paths:                   # never written by an agent, even with approval
+  - ".github/*"
+  - "agents/*"
+  - "src/*"
+  - "factory.yaml"
+  - "pyproject.toml"
+  - "uv.lock"
+  - "Makefile"
+  - ".env*"
+gate_paths: ["demo_app/auth*", "demo_app/requirements*"]   # writable, but a human approves the plan first
+gate_keywords: [password, secret, token, credential, auth, delete all, payment, dependency]
+
+verify_commands:                   # the orchestrator runs these itself; the coder only edits files
+  - ["{python}", -m, pytest, demo_app/tests, -q, -p, no:cacheprovider]   # {python} = the factory's interpreter
+  - ["{python}", -m, ruff, check, --no-cache, demo_app]
+test_globs: ["demo_app/tests/*"]
+max_diff_lines: 400
+
+backend: mock                      # mock | litellm | claude-code
+
+# Model routing. Roles never name a model: they name a tier, and the lane decides the tier.
+tiers:                             # cheapest first; values are LiteLLM aliases (litellm_config.yaml)
+  fast: claude-haiku
+  standard: claude-sonnet
+  frontier: claude-opus
+backend_tiers:                     # the claude-code backend takes Claude Code's own model aliases
+  claude-code: {fast: haiku, standard: sonnet, frontier: opus}
+triage_tier: fast
+
+# Routing (policy.route): triage labels the ticket, this decides the lane.
+fast_kinds: [bug, chore]
+max_fast_size: M
+
+lanes:
+  fast:
+    description: Small bugs and chores. Cheap models, no browser QA, and the fix must prove itself with a test.
+    qa: false
+    require_regression_test: true  # the new test must fail on the base branch and pass with the fix
+    max_code_attempts: 2
+    escalate_on_retry: true
+    roles: {planner: fast, coder: standard, reviewer: fast}
+  complex:
+    description: Features and anything large. Frontier planning, browser QA against acceptance criteria.
+    qa: true
+    max_code_attempts: 3
+    escalate_on_retry: true        # attempt 2 runs the coder on frontier
+    roles: {planner: frontier, coder: standard, qa: fast, reviewer: standard}
+
+safe_outputs:                      # caps the publisher enforces, whatever the agent side queued
+  max_comments_per_ticket: 4
+  label_prefixes: ["kind:", "lane:", "size:"]
+
+qa_app: demo_app.app:app
+auto_merge_lessons: false

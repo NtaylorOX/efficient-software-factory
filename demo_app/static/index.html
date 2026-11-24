@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Notes board</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 36rem; margin: 2rem auto; padding: 0 1rem; }
+    li { padding: .5rem; border-bottom: 1px solid #ddd; list-style: none; }
+    form { display: flex; gap: .5rem; margin-bottom: 1rem; }
+    input { flex: 1; padding: .4rem; }
+  </style>
+</head>
+<body>
+  <h1>Notes board</h1>
+  <form id="add-form">
+    <input id="new-note" aria-label="New note" placeholder="Write a note" required>
+    <button type="submit">Add note</button>
+  </form>
+  <ul id="notes" aria-label="Notes"></ul>
+  <script>
+    async function load() {
+      const notes = await (await fetch("/api/notes")).json();
+      const list = document.getElementById("notes");
+      list.replaceChildren(...notes.map(n => Object.assign(document.createElement("li"), { textContent: n.text })));
+    }
+    document.getElementById("add-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const input = document.getElementById("new-note");
+      await fetch("/api/notes", { method: "POST", headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ text: input.value }) });
+      input.value = "";
+      load();
+    });
+    load();
+  </script>
+</body>
+</html>
