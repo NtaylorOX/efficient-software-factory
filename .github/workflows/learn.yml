@@ -1,0 +1,68 @@
+# Learning loop: when a human reviews or closes a factory PR, derive lessons and publish them as a PR.
+# Same split as factory.yml: the learn job has a model key and read-only access; the publish job writes.
+# Only comments by `trusted_reviewers` in factory.yaml reach the retro agent. Lesson PRs are merged
+# automatically only if `auto_merge_lessons: true`, and only after every lesson line is re-validated.
+name: learn
+
+on:
+  pull_request_review:
+    types: [submitted]
+  pull_request:
+    types: [closed]
+
+permissions: {}
+
+jobs:
+  learn:
+    if: startsWith(github.event.pull_request.head.ref, 'factory/') && !startsWith(github.event.pull_request.head.ref, 'factory/lessons-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      FACTORY_REPO: ${{ github.repository }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      GITHUB_TOKEN: ${{ github.token }}
+      LITELLM_BASE_URL: ${{ vars.LITELLM_BASE_URL }}
+      LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
+      FACTORY_ANTHROPIC_API_KEY: ${{ secrets.FACTORY_ANTHROPIC_API_KEY }}
+      FACTORY_ANTHROPIC_BASE_URL: ${{ vars.FACTORY_ANTHROPIC_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run factory --backend "${{ vars.FACTORY_BACKEND || 'litellm' }}" learn --pr "$PR_URL" --bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: factory-lessons
+          path: .factory/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+  publish:
+    needs: learn
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      FACTORY_REPO: ${{ github.repository }}
+      FACTORY_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --no-dev
+      - uses: actions/download-artifact@v4
+        with:
+          name: factory-lessons
+          path: .factory
+      - run: uv run factory publish

@@ -1,0 +1,22 @@
+# One OpenAI-compatible endpoint for every model the factory uses. Agents and the factory process only
+# ever hold a LiteLLM key; provider keys stay in this proxy's environment.
+# Start:  LITELLM_MASTER_KEY=sk-local litellm --config litellm_config.yaml --port 4000
+# Use:    export LITELLM_BASE_URL=http://localhost:4000/v1 LITELLM_API_KEY=<virtual key>
+# Virtual keys with a budget and expiry (needs the proxy's database; see LiteLLM docs):
+#   curl -s localhost:4000/key/generate -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+#        -d '{"max_budget": 2, "duration": "1d", "models": ["claude-sonnet", "claude-haiku"]}'
+model_list:
+  - model_name: claude-sonnet              # planner, coder, reviewer, retro
+    litellm_params: {model: anthropic/claude-sonnet-5-5, api_key: "os.environ/ANTHROPIC_API_KEY"}
+  - model_name: claude-haiku               # QA steps: many small calls
+    litellm_params: {model: anthropic/claude-haiku-5-5, api_key: "os.environ/ANTHROPIC_API_KEY"}
+  - model_name: gpt                        # any other provider works the same way; model id unverified
+    litellm_params: {model: openai/gpt-5, api_key: "os.environ/OPENAI_API_KEY"}
+  - model_name: ollama-qwen3-8b            # local; fine for QA steps, weak as a coder
+    litellm_params: {model: ollama_chat/qwen3:8b, api_base: "http://localhost:11434"}
+
+litellm_settings:
+  drop_params: true                        # can hide differences between backends: say so in write-ups
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

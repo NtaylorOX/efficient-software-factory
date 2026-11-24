@@ -1,0 +1,80 @@
+# Issue labelled `factory` (or `factory-approved`) -> agents -> publisher -> pull request.
+#
+# Two jobs, so no job holds untrusted input, a model key and write access at once ("Rule of Two"):
+#   agents   reads the issue, has a model key, and a READ-ONLY token. It writes a bundle (diff + PR text)
+#            and queued comments to an artifact. It cannot push, comment or open a PR.
+#   publish  has a write token and NO model key. It never runs a model. It re-applies the diff to a clean
+#            checkout, re-checks it against factory.yaml, then pushes and opens the PR.
+# Issue text never reaches a shell: only the issue number is passed, through env.
+name: factory
+
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  group: factory-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  agents:
+    if: github.event.label.name == 'factory' || github.event.label.name == 'factory-approved'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+    env:
+      FACTORY_REPO: ${{ github.repository }}
+      TICKET: gh${{ github.event.issue.number }}
+      GITHUB_TOKEN: ${{ github.token }}                  # read-only here; agents never see it (scrubbed env)
+      LITELLM_BASE_URL: ${{ vars.LITELLM_BASE_URL }}
+      LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}    # use a LiteLLM virtual key with a budget and expiry
+      FACTORY_ANTHROPIC_API_KEY: ${{ secrets.FACTORY_ANTHROPIC_API_KEY }}  # only for the claude-code backend
+      FACTORY_ANTHROPIC_BASE_URL: ${{ vars.FACTORY_ANTHROPIC_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --all-extras --frozen
+      - run: uv run playwright install --with-deps chromium
+      - name: Run the agents (no write access)
+        run: uv run factory --backend "${{ vars.FACTORY_BACKEND || 'litellm' }}" run --ticket "$TICKET" --defer-publish
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: factory-state
+          path: |
+            .factory/
+            !.factory/runs/*/home/
+          include-hidden-files: true
+          retention-days: 14
+
+  publish:
+    needs: agents
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    env:
+      FACTORY_REPO: ${{ github.repository }}
+      FACTORY_GITHUB_TOKEN: ${{ github.token }}          # no model key in this job
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --no-dev
+      - uses: actions/download-artifact@v4
+        with:
+          name: factory-state
+          path: .factory
+      - name: Publish (deterministic, no model)
+        run: uv run factory publish
